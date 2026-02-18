@@ -83,6 +83,40 @@ func TestStreamContinuationStyle(t *testing.T) {
 		}
 	})
 
+	t.Run("Distinct -> Collect", func(t *testing.T) {
+		data := []int{1, 2, 1, 3, 2, 4, 3}
+
+		result := Stream(
+			slices.Values(data),
+			Distinct(
+				End(Collect[int]()),
+			),
+		)
+
+		expected := []int{1, 2, 3, 4}
+		if !reflect.DeepEqual(result, expected) {
+			t.Errorf("Stream() = %v, expected %v", result, expected)
+		}
+	})
+
+	t.Run("Distinct -> Take -> Collect", func(t *testing.T) {
+		data := []string{"apple", "apple", "banana", "orange", "banana", "grape"}
+
+		result := Stream(
+			slices.Values(data),
+			Distinct(
+				Take(2,
+					End(Collect[string]()),
+				),
+			),
+		)
+
+		expected := []string{"apple", "banana"}
+		if !reflect.DeepEqual(result, expected) {
+			t.Errorf("Stream() = %v, expected %v", result, expected)
+		}
+	})
+
 	t.Run("Filter only with Collect", func(t *testing.T) {
 		data := []int{1, 2, 3, 4, 5}
 
@@ -306,6 +340,23 @@ func TestAggregateFunctions(t *testing.T) {
 		}
 		if last.OK || last.Value != 0 {
 			t.Errorf("Last() = (%v, %v), expected (0, false)", last.Value, last.OK)
+		}
+	})
+
+	t.Run("GroupBy groups values by key", func(t *testing.T) {
+		data := []string{"apple", "banana", "apricot", "blueberry", "avocado"}
+
+		result := Stream(
+			slices.Values(data),
+			End(GroupBy(func(s string) byte { return s[0] })),
+		)
+
+		expected := map[byte][]string{
+			'a': {"apple", "apricot", "avocado"},
+			'b': {"banana", "blueberry"},
+		}
+		if !reflect.DeepEqual(result, expected) {
+			t.Errorf("GroupBy() = %v, expected %v", result, expected)
 		}
 	})
 }

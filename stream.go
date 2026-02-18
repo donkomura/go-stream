@@ -69,6 +69,44 @@ func FlatMap[F, A, B any](fn func(A) iter.Seq[B], cont func(iter.Seq[B]) F) func
 	}
 }
 
+func Distinct[A comparable, F any](cont func(iter.Seq[A]) F) func(iter.Seq[A]) F {
+	return func(seq iter.Seq[A]) F {
+		return cont(func(yield func(A) bool) {
+			seen := map[A]struct{}{}
+			for v := range seq {
+				if _, ok := seen[v]; ok {
+					continue
+				}
+				seen[v] = struct{}{}
+				if !yield(v) {
+					return
+				}
+			}
+		})
+	}
+}
+
+func Take[A any, F any](n int, cont func(iter.Seq[A]) F) func(iter.Seq[A]) F {
+	return func(seq iter.Seq[A]) F {
+		return cont(func(yield func(A) bool) {
+			if n <= 0 {
+				return
+			}
+
+			count := 0
+			for v := range seq {
+				if !yield(v) {
+					return
+				}
+				count++
+				if count >= n {
+					return
+				}
+			}
+		})
+	}
+}
+
 func Collect[E any]() func(iter.Seq[E]) []E {
 	return func(seq iter.Seq[E]) []E {
 		result := []E{}
@@ -139,5 +177,16 @@ func Last[A any]() func(iter.Seq[A]) AggregateResult[A] {
 			ok = true
 		}
 		return AggregateResult[A]{Value: last, OK: ok}
+	}
+}
+
+func GroupBy[A any, K comparable](keyFn func(A) K) func(iter.Seq[A]) map[K][]A {
+	return func(seq iter.Seq[A]) map[K][]A {
+		result := map[K][]A{}
+		for v := range seq {
+			key := keyFn(v)
+			result[key] = append(result[key], v)
+		}
+		return result
 	}
 }
