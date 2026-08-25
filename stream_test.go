@@ -5,351 +5,249 @@ import (
 	"iter"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
-func TestStreamContinuationStyle(t *testing.T) {
+func TestStreamMethodChain(t *testing.T) {
 	t.Run("Filter -> Map -> Collect", func(t *testing.T) {
 		data := []int{1, 2, 3, 4, 5, 6}
 
-		result := Stream(
-			slices.Values(data),
-			Filter(func(n int) bool { return n%2 == 0 },
-				Map(func(n int) string { return string(rune('a' + n - 1)) },
-					End(Collect[string]()),
-				),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			Filter(func(n int) bool { return n%2 == 0 }).
+			Map(func(n int) string { return string(rune('a' + n - 1)) }).
+			Collect()
 
 		expected := []string{"b", "d", "f"}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
 	t.Run("Sort -> Filter -> Collect", func(t *testing.T) {
 		data := []int{3, 1, 4, 1, 5, 9, 2, 6}
 
-		result := Stream(
-			slices.Values(data),
-			Sort(cmp.Compare[int],
-				Filter(func(n int) bool { return n > 3 },
-					End(Collect[int]()),
-				),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			Sort(cmp.Compare[int]).
+			Filter(func(n int) bool { return n > 3 }).
+			Collect()
 
 		expected := []int{4, 5, 6, 9}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
 	t.Run("Sort descending -> Map -> Collect", func(t *testing.T) {
 		data := []int{3, 1, 4, 1, 5}
 
-		result := Stream(
-			slices.Values(data),
-			Sort(func(a, b int) int { return cmp.Compare(b, a) },
-				Map(func(n int) int { return n * 10 },
-					End(Collect[int]()),
-				),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			Sort(func(a, b int) int { return cmp.Compare(b, a) }).
+			Map(func(n int) int { return n * 10 }).
+			Collect()
 
 		expected := []int{50, 40, 30, 10, 10}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
 	t.Run("Map -> Sort -> Filter -> Collect", func(t *testing.T) {
 		data := []string{"abc", "a", "ab", "abcd"}
 
-		result := Stream(
-			slices.Values(data),
-			Map(func(s string) int { return len(s) },
-				Sort(cmp.Compare[int],
-					Filter(func(n int) bool { return n >= 2 },
-						End(Collect[int]()),
-					),
-				),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			Map(func(s string) int { return len(s) }).
+			Sort(cmp.Compare[int]).
+			Filter(func(n int) bool { return n >= 2 }).
+			Collect()
 
 		expected := []int{2, 3, 4}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
+		}
+	})
+
+	t.Run("FlatMap -> Collect", func(t *testing.T) {
+		data := []string{"a b", "c"}
+
+		result := NewStream(slices.Values(data)).
+			FlatMap(func(s string) iter.Seq[string] { return strings.SplitSeq(s, " ") }).
+			Collect()
+
+		expected := []string{"a", "b", "c"}
+		if !reflect.DeepEqual(result, expected) {
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
 	t.Run("Distinct -> Collect", func(t *testing.T) {
 		data := []int{1, 2, 1, 3, 2, 4, 3}
 
-		result := Stream(
-			slices.Values(data),
-			Distinct(
-				End(Collect[int]()),
-			),
-		)
+		result := Distinct(NewStream(slices.Values(data))).Collect()
 
 		expected := []int{1, 2, 3, 4}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
-	t.Run("Distinct -> Take -> Collect", func(t *testing.T) {
+	t.Run("DistinctBy -> Take -> Collect", func(t *testing.T) {
 		data := []string{"apple", "apple", "banana", "orange", "banana", "grape"}
 
-		result := Stream(
-			slices.Values(data),
-			Distinct(
-				Take(2,
-					End(Collect[string]()),
-				),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			DistinctBy(func(s string) string { return s }).
+			Take(2).
+			Collect()
 
 		expected := []string{"apple", "banana"}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
-	t.Run("Filter only with Collect", func(t *testing.T) {
+	t.Run("Filter only", func(t *testing.T) {
 		data := []int{1, 2, 3, 4, 5}
 
-		result := Stream(
-			slices.Values(data),
-			Filter(func(n int) bool { return n > 2 },
-				End(Collect[int]()),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			Filter(func(n int) bool { return n > 2 }).
+			Collect()
 
 		expected := []int{3, 4, 5}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
-	t.Run("Sort only with Collect", func(t *testing.T) {
+	t.Run("Sort only", func(t *testing.T) {
 		data := []int{5, 2, 8, 1, 9}
 
-		result := Stream(
-			slices.Values(data),
-			Sort(cmp.Compare[int],
-				End(Collect[int]()),
-			),
-		)
+		result := NewStream(slices.Values(data)).Sort(cmp.Compare[int]).Collect()
 
 		expected := []int{1, 2, 5, 8, 9}
 		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
-		}
-	})
-
-	t.Run("Empty stream with Collect", func(t *testing.T) {
-		data := []int{}
-
-		result := Stream(
-			slices.Values(data),
-			Filter(func(n int) bool { return n > 0 },
-				End(Collect[int]()),
-			),
-		)
-
-		expected := []int{}
-		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
-		}
-	})
-}
-
-func TestCollectFunction(t *testing.T) {
-	t.Run("Collect converts iter.Seq to slice", func(t *testing.T) {
-		data := []int{1, 2, 3, 4, 5}
-		seq := slices.Values(data)
-
-		collect := Collect[int]()
-		result := collect(seq)
-
-		expected := []int{1, 2, 3, 4, 5}
-		if !reflect.DeepEqual(result, expected) {
 			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
 
-	t.Run("Collect with empty sequence", func(t *testing.T) {
+	t.Run("Empty stream", func(t *testing.T) {
 		data := []int{}
-		seq := slices.Values(data)
 
-		collect := Collect[int]()
-		result := collect(seq)
+		result := NewStream(slices.Values(data)).
+			Filter(func(n int) bool { return n > 0 }).
+			Collect()
 
 		expected := []int{}
 		if !reflect.DeepEqual(result, expected) {
 			t.Errorf("Collect() = %v, expected %v", result, expected)
 		}
 	})
-}
 
-func TestSortFunction(t *testing.T) {
-	t.Run("Sort orders elements", func(t *testing.T) {
-		data := []int{3, 1, 4, 1, 5, 9, 2, 6}
-		seq := slices.Values(data)
-
-		sortFunc := Sort(cmp.Compare[int],
-			func(seq iter.Seq[int]) []int {
-				result := []int{}
-				for v := range seq {
-					result = append(result, v)
+	t.Run("Take stops the upstream source", func(t *testing.T) {
+		visited := 0
+		source := NewStream(func(yield func(int) bool) {
+			for i := range 100 {
+				visited++
+				if !yield(i) {
+					return
 				}
-				return result
-			},
-		)
+			}
+		})
 
-		result := sortFunc(seq)
-		expected := []int{1, 1, 2, 3, 4, 5, 6, 9}
+		result := source.Take(3).Collect()
 
-		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Sort() = %v, expected %v", result, expected)
+		if !reflect.DeepEqual(result, []int{0, 1, 2}) {
+			t.Fatalf("Collect() = %v, expected [0 1 2]", result)
 		}
-	})
-
-	t.Run("Sort with custom comparator", func(t *testing.T) {
-		data := []int{1, 2, 3, 4, 5}
-		seq := slices.Values(data)
-
-		sortFunc := Sort(func(a, b int) int { return cmp.Compare(b, a) },
-			func(seq iter.Seq[int]) []int {
-				result := []int{}
-				for v := range seq {
-					result = append(result, v)
-				}
-				return result
-			},
-		)
-
-		result := sortFunc(seq)
-		expected := []int{5, 4, 3, 2, 1}
-
-		if !reflect.DeepEqual(result, expected) {
-			t.Errorf("Sort() = %v, expected %v", result, expected)
+		if visited != 3 {
+			t.Errorf("visited = %d, expected 3 (Take must stop the source)", visited)
 		}
 	})
 }
 
-func TestAggregateFunctions(t *testing.T) {
-	t.Run("Filter -> Reduce sums even numbers", func(t *testing.T) {
+func TestStreamTerminalOperations(t *testing.T) {
+	t.Run("Reduce sums filtered values", func(t *testing.T) {
 		data := []int{1, 2, 3, 4, 5, 6}
 
-		result := Stream(
-			slices.Values(data),
-			Filter(func(n int) bool { return n%2 == 0 },
-				End(Reduce(0, func(acc, n int) int { return acc + n })),
-			),
-		)
+		result := NewStream(slices.Values(data)).
+			Filter(func(n int) bool { return n%2 == 0 }).
+			Reduce(0, func(acc, n int) int { return acc + n })
 
-		expected := 12
-		if result != expected {
-			t.Errorf("Stream() = %v, expected %v", result, expected)
+		if result != 12 {
+			t.Errorf("Reduce() = %v, expected 12", result)
+		}
+	})
+
+	t.Run("Reduce can change the element type", func(t *testing.T) {
+		data := []int{1, 2, 3}
+
+		result := NewStream(slices.Values(data)).
+			Reduce("", func(acc string, n int) string { return acc + string(rune('0'+n)) })
+
+		if result != "123" {
+			t.Errorf("Reduce() = %q, expected %q", result, "123")
 		}
 	})
 
 	t.Run("Count returns number of elements", func(t *testing.T) {
 		data := []string{"a", "b", "c"}
 
-		result := Stream(
-			slices.Values(data),
-			End(Count[string]()),
-		)
-
-		expected := 3
-		if result != expected {
-			t.Errorf("Count() = %v, expected %v", result, expected)
+		if got := NewStream(slices.Values(data)).Count(); got != 3 {
+			t.Errorf("Count() = %v, expected 3", got)
 		}
 	})
 
 	t.Run("Any returns true when one element matches", func(t *testing.T) {
 		data := []int{1, 3, 4, 7}
 
-		result := Stream(
-			slices.Values(data),
-			End(Any(func(n int) bool { return n%2 == 0 })),
-		)
-
-		if !result {
-			t.Errorf("Any() = %v, expected true", result)
+		if !NewStream(slices.Values(data)).Any(func(n int) bool { return n%2 == 0 }) {
+			t.Error("Any() = false, expected true")
 		}
 	})
 
 	t.Run("All returns false when one element does not match", func(t *testing.T) {
 		data := []int{2, 4, 5, 8}
 
-		result := Stream(
-			slices.Values(data),
-			End(All(func(n int) bool { return n%2 == 0 })),
-		)
-
-		if result {
-			t.Errorf("All() = %v, expected false", result)
+		if NewStream(slices.Values(data)).All(func(n int) bool { return n%2 == 0 }) {
+			t.Error("All() = true, expected false")
 		}
 	})
 
 	t.Run("First returns first element and true", func(t *testing.T) {
 		data := []int{9, 8, 7}
 
-		result := Stream(
-			slices.Values(data),
-			End(First[int]()),
-		)
-
-		if !result.OK || result.Value != 9 {
-			t.Errorf("First() = (%v, %v), expected (9, true)", result.Value, result.OK)
+		value, ok := NewStream(slices.Values(data)).First()
+		if !ok || value != 9 {
+			t.Errorf("First() = (%v, %v), expected (9, true)", value, ok)
 		}
 	})
 
 	t.Run("Last returns last element and true", func(t *testing.T) {
 		data := []int{9, 8, 7}
 
-		result := Stream(
-			slices.Values(data),
-			End(Last[int]()),
-		)
-
-		if !result.OK || result.Value != 7 {
-			t.Errorf("Last() = (%v, %v), expected (7, true)", result.Value, result.OK)
+		value, ok := NewStream(slices.Values(data)).Last()
+		if !ok || value != 7 {
+			t.Errorf("Last() = (%v, %v), expected (7, true)", value, ok)
 		}
 	})
 
 	t.Run("First and Last return false for empty stream", func(t *testing.T) {
 		data := []int{}
 
-		first := Stream(
-			slices.Values(data),
-			End(First[int]()),
-		)
-		last := Stream(
-			slices.Values(data),
-			End(Last[int]()),
-		)
-
-		if first.OK || first.Value != 0 {
-			t.Errorf("First() = (%v, %v), expected (0, false)", first.Value, first.OK)
+		firstValue, firstOK := NewStream(slices.Values(data)).First()
+		if firstOK || firstValue != 0 {
+			t.Errorf("First() = (%v, %v), expected (0, false)", firstValue, firstOK)
 		}
-		if last.OK || last.Value != 0 {
-			t.Errorf("Last() = (%v, %v), expected (0, false)", last.Value, last.OK)
+
+		lastValue, lastOK := NewStream(slices.Values(data)).Last()
+		if lastOK || lastValue != 0 {
+			t.Errorf("Last() = (%v, %v), expected (0, false)", lastValue, lastOK)
 		}
 	})
 
 	t.Run("GroupBy groups values by key", func(t *testing.T) {
 		data := []string{"apple", "banana", "apricot", "blueberry", "avocado"}
 
-		result := Stream(
-			slices.Values(data),
-			End(GroupBy(func(s string) byte { return s[0] })),
-		)
+		result := NewStream(slices.Values(data)).GroupBy(func(s string) byte { return s[0] })
 
 		expected := map[byte][]string{
 			'a': {"apple", "apricot", "avocado"},
@@ -357,6 +255,16 @@ func TestAggregateFunctions(t *testing.T) {
 		}
 		if !reflect.DeepEqual(result, expected) {
 			t.Errorf("GroupBy() = %v, expected %v", result, expected)
+		}
+	})
+
+	t.Run("Seq exposes the underlying iterator", func(t *testing.T) {
+		data := []int{1, 2, 3}
+
+		got := slices.Collect(NewStream(slices.Values(data)).Map(func(n int) int { return n * 2 }).Seq())
+
+		if !reflect.DeepEqual(got, []int{2, 4, 6}) {
+			t.Errorf("Seq() = %v, expected [2 4 6]", got)
 		}
 	})
 }

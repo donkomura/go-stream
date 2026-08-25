@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
-	"hash/fnv"
-	"iter"
+	"hash/maphash"
 	"math"
 )
 
@@ -17,21 +15,17 @@ var (
 	errIncompatibleCMS   = errors.New("count-min sketches are incompatible")
 )
 
-// CountMinSketch is a probabilistic frequency estimator.
+// CountMinSketch is a probabilistic frequency estimator over values of type T.
 // It never underestimates and may overestimate due to hash collisions.
-type CountMinSketch struct {
-	width int
-	depth int
-	table [][]uint64
-	total uint64
+type CountMinSketch[T any] struct {
+	hasher maphash.Hasher[T]
+	width  int
+	depth  int
+	table  [][]uint64
+	total  uint64
 }
 
-type CountMinSketchResult struct {
-	Sketch *CountMinSketch
-	Err    error
-}
-
-func NewCountMinSketch(width, depth int) (*CountMinSketch, error) {
+func NewCountMinSketch[T any](hasher maphash.Hasher[T], width, depth int) (*CountMinSketch[T], error) {
 	if width <= 0 {
 		return nil, errInvalidWidth
 	}
@@ -44,16 +38,21 @@ func NewCountMinSketch(width, depth int) (*CountMinSketch, error) {
 		table[i] = make([]uint64, width)
 	}
 
-	return &CountMinSketch{
-		width: width,
-		depth: depth,
-		table: table,
+	return &CountMinSketch[T]{
+		hasher: hasher,
+		width:  width,
+		depth:  depth,
+		table:  table,
 	}, nil
+}
+
+func NewComparableCountMinSketch[T comparable](width, depth int) (*CountMinSketch[T], error) {
+	return NewCountMinSketch(maphash.ComparableHasher[T]{}, width, depth)
 }
 
 // NewCountMinSketchByError creates sketch dimensions from error bounds.
 // epsilon is the additive error factor, delta is failure probability.
-func NewCountMinSketchByError(epsilon, delta float64) (*CountMinSketch, error) {
+func NewCountMinSketchByError[T any](hasher maphash.Hasher[T], epsilon, delta float64) (*CountMinSketch[T], error) {
 	if epsilon <= 0 {
 		return nil, errInvalidEpsilon
 	}
@@ -63,54 +62,45 @@ func NewCountMinSketchByError(epsilon, delta float64) (*CountMinSketch, error) {
 
 	width := int(math.Ceil(math.E / epsilon))
 	depth := int(math.Ceil(math.Log(1 / delta)))
-	return NewCountMinSketch(width, depth)
+	return NewCountMinSketch(hasher, width, depth)
 }
 
-func (cms *CountMinSketch) Width() int {
+func NewComparableCountMinSketchByError[T comparable](epsilon, delta float64) (*CountMinSketch[T], error) {
+	return NewCountMinSketchByError(maphash.ComparableHasher[T]{}, epsilon, delta)
+}
+
+func (cms *CountMinSketch[T]) Width() int {
 	return cms.width
 }
 
-func (cms *CountMinSketch) Depth() int {
+func (cms *CountMinSketch[T]) Depth() int {
 	return cms.depth
 }
 
-func (cms *CountMinSketch) TotalCount() uint64 {
+func (cms *CountMinSketch[T]) TotalCount() uint64 {
 	return cms.total
 }
 
-func (cms *CountMinSketch) AddString(key string, count uint64) {
-	cms.AddBytes([]byte(key), count)
-}
-
-func (cms *CountMinSketch) AddBytes(key []byte, count uint64) {
+func (cms *CountMinSketch[T]) Add(v T, count uint64) {
 	if count == 0 {
 		return
 	}
 
-	for row := 0; row < cms.depth; row++ {
-		col := cms.column(key, row)
-		cms.table[row][col] += count
+	for row := range cms.depth {
+		cms.table[row][cms.column(v, row)] += count
 	}
 	cms.total += count
 }
 
-func (cms *CountMinSketch) EstimateString(key string) uint64 {
-	return cms.EstimateBytes([]byte(key))
-}
-
-func (cms *CountMinSketch) EstimateBytes(key []byte) uint64 {
-	min := uint64(math.MaxUint64)
-	for row := 0; row < cms.depth; row++ {
-		col := cms.column(key, row)
-		v := cms.table[row][col]
-		if v < min {
-			min = v
-		}
+func (cms *CountMinSketch[T]) Estimate(v T) uint64 {
+	estimate := uint64(math.MaxUint64)
+	for row := range cms.depth {
+		estimate = min(estimate, cms.table[row][cms.column(v, row)])
 	}
-	return min
+	return estimate
 }
 
-func (cms *CountMinSketch) Merge(other *CountMinSketch) error {
+func (cms *CountMinSketch[T]) Merge(other *CountMinSketch[T]) error {
 	if cms == nil || other == nil {
 		return errNilCountMinSketch
 	}
@@ -118,8 +108,8 @@ func (cms *CountMinSketch) Merge(other *CountMinSketch) error {
 		return errIncompatibleCMS
 	}
 
-	for row := 0; row < cms.depth; row++ {
-		for col := 0; col < cms.width; col++ {
+	for row := range cms.depth {
+		for col := range cms.width {
 			cms.table[row][col] += other.table[row][col]
 		}
 	}
@@ -127,51 +117,37 @@ func (cms *CountMinSketch) Merge(other *CountMinSketch) error {
 	return nil
 }
 
-func (cms *CountMinSketch) Reset() {
-	for row := 0; row < cms.depth; row++ {
+func (cms *CountMinSketch[T]) Reset() {
+	for row := range cms.depth {
 		clear(cms.table[row])
 	}
 	cms.total = 0
 }
 
-func (cms *CountMinSketch) column(key []byte, row int) int {
-	return int(hashRowKey(key, row) % uint64(cms.width))
+func (cms *CountMinSketch[T]) column(v T, row int) int {
+	return int(hashRound(cms.hasher, row, v) % uint64(cms.width))
 }
 
-func hashRowKey(key []byte, row int) uint64 {
-	var rowPrefix [8]byte
-	binary.LittleEndian.PutUint64(rowPrefix[:], uint64(row))
-
-	h := fnv.New64a()
-	_, _ = h.Write(rowPrefix[:])
-	_, _ = h.Write(key)
-	return h.Sum64()
-}
-
-func CountMinSketchCollect[A any](width, depth int, keyFn func(A) string) func(iter.Seq[A]) CountMinSketchResult {
-	return func(seq iter.Seq[A]) CountMinSketchResult {
-		cms, err := NewCountMinSketch(width, depth)
-		if err != nil {
-			return CountMinSketchResult{Err: err}
-		}
-
-		for v := range seq {
-			cms.AddString(keyFn(v), 1)
-		}
-		return CountMinSketchResult{Sketch: cms}
+func (s Stream[A]) CollectCountMinSketch(hasher maphash.Hasher[A], width, depth int) (*CountMinSketch[A], error) {
+	cms, err := NewCountMinSketch(hasher, width, depth)
+	if err != nil {
+		return nil, err
 	}
+
+	for v := range s.seq {
+		cms.Add(v, 1)
+	}
+	return cms, nil
 }
 
-func CountMinSketchCollectByError[A any](epsilon, delta float64, keyFn func(A) string) func(iter.Seq[A]) CountMinSketchResult {
-	return func(seq iter.Seq[A]) CountMinSketchResult {
-		cms, err := NewCountMinSketchByError(epsilon, delta)
-		if err != nil {
-			return CountMinSketchResult{Err: err}
-		}
-
-		for v := range seq {
-			cms.AddString(keyFn(v), 1)
-		}
-		return CountMinSketchResult{Sketch: cms}
+func (s Stream[A]) CollectCountMinSketchByError(hasher maphash.Hasher[A], epsilon, delta float64) (*CountMinSketch[A], error) {
+	cms, err := NewCountMinSketchByError(hasher, epsilon, delta)
+	if err != nil {
+		return nil, err
 	}
+
+	for v := range s.seq {
+		cms.Add(v, 1)
+	}
+	return cms, nil
 }

@@ -24,12 +24,9 @@ func main() {
 	}
 
 	source := NewFileLineStream([]string{file1, file2})
-	appleCount := Stream(
-		source.Seq,
-		Filter(func(v string) bool { return v == "apple" },
-			End(Count[string]()),
-		),
-	)
+	appleCount := source.
+		Filter(func(v string) bool { return v == "apple" }).
+		Count()
 	if err := source.Err(); err != nil {
 		panic(err)
 	}

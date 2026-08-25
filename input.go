@@ -5,8 +5,8 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"iter"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -33,21 +33,6 @@ func setFirstErr(dst *error, err error) {
 		*dst = err
 	}
 }
-
-// Input provides a lazy sequence with per-run error reporting.
-type Input[T any] struct {
-	Seq iter.Seq[T]
-	Err func() error
-}
-
-// FileStream provides a lazy file reference sequence.
-type FileStream = Input[FileInput]
-
-// FileLineStream keeps backward-compatible naming for line-oriented input.
-type FileLineStream = Input[string]
-
-// FileCSVStream provides CSV record input where each record is []string.
-type FileCSVStream = Input[[]string]
 
 // FileInput is the interface passed from file stream to parsing.
 // It abstracts how a file is opened, so parsing can focus on decoding logic.
@@ -80,7 +65,7 @@ func trimLineEnding(line string) string {
 
 // NewFileStream creates a lazy file reference stream in path order.
 // It validates each file exists before yielding it.
-func NewFileStream(paths []string) FileStream {
+func NewFileStream(paths []string) Stream[FileInput] {
 	var state runErrState
 
 	seq := func(yield func(FileInput) bool) {
@@ -101,17 +86,12 @@ func NewFileStream(paths []string) FileStream {
 		}
 	}
 
-	return FileStream{
-		Seq: seq,
-		Err: func() error {
-			return state.Get()
-		},
-	}
+	return Stream[FileInput]{seq: seq, err: state.Get}
 }
 
-// ParseFiles creates a parsed input stream by connecting a FileStream and a FileParser.
-// This is the boundary between file streaming and format parsing.
-func ParseFiles[T any](files FileStream, parser FileParser[T]) Input[T] {
+// ParseFiles creates a parsed input stream by connecting a file stream and a
+// FileParser. This is the boundary between file streaming and format parsing.
+func ParseFiles[T any](files Stream[FileInput], parser FileParser[T]) Stream[T] {
 	var state runErrState
 
 	seq := func(yield func(T) bool) {
@@ -120,7 +100,7 @@ func ParseFiles[T any](files FileStream, parser FileParser[T]) Input[T] {
 			state.Set(runErr)
 		}()
 
-		for file := range files.Seq {
+		for file := range files.Seq() {
 			consumerStopped, err := parseFileWith[T](file, parser, yield)
 			setFirstErr(&runErr, err)
 			if consumerStopped {
@@ -130,17 +110,10 @@ func ParseFiles[T any](files FileStream, parser FileParser[T]) Input[T] {
 				return
 			}
 		}
-		if sourceErr := files.Err(); sourceErr != nil {
-			setFirstErr(&runErr, sourceErr)
-		}
+		setFirstErr(&runErr, files.Err())
 	}
 
-	return Input[T]{
-		Seq: seq,
-		Err: func() error {
-			return state.Get()
-		},
-	}
+	return Stream[T]{seq: seq, err: state.Get}
 }
 
 func parseFileWith[T any](file FileInput, parser FileParser[T], yield func(T) bool) (consumerStopped bool, err error) {
@@ -218,21 +191,19 @@ func (p CSVParser) Parse(_ string, r io.Reader, yield func([]string) bool) error
 		if err != nil {
 			return err
 		}
-		cloned := append([]string(nil), record...)
-		if !yield(cloned) {
+		// csv.Reader reuses its record buffer between calls.
+		if !yield(slices.Clone(record)) {
 			return nil
 		}
 	}
 }
 
-// NewFileLineStream keeps the old line-oriented API and now composes
-// FileStream -> LineParser -> transform pipeline.
-func NewFileLineStream(paths []string) FileLineStream {
+// NewFileLineStream composes FileStream -> LineParser into a line stream.
+func NewFileLineStream(paths []string) Stream[string] {
 	return ParseFiles[string](NewFileStream(paths), LineParser{})
 }
 
-// NewFileCSVStream provides CSV input by composing
-// FileStream -> CSVParser -> transform pipeline.
-func NewFileCSVStream(paths []string) FileCSVStream {
+// NewFileCSVStream composes FileStream -> CSVParser into a record stream.
+func NewFileCSVStream(paths []string) Stream[[]string] {
 	return ParseFiles[[]string](NewFileStream(paths), CSVParser{})
 }
