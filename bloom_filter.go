@@ -1,37 +1,31 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
-	"hash/fnv"
-	"iter"
+	"hash/maphash"
 	"math"
 )
 
 var (
-	errInvalidBitSize            = errors.New("bitSize must be > 0")
-	errInvalidHashFuncs          = errors.New("hashFuncs must be > 0")
-	errInvalidExpectedItems      = errors.New("expectedItems must be > 0")
-	errInvalidFalsePositiveRate  = errors.New("falsePositiveRate must be in (0, 1)")
-	errNilBloomFilter            = errors.New("bloom filter is nil")
-	errIncompatibleBloomFilter   = errors.New("bloom filters are incompatible")
+	errInvalidBitSize           = errors.New("bitSize must be > 0")
+	errInvalidHashFuncs         = errors.New("hashFuncs must be > 0")
+	errInvalidExpectedItems     = errors.New("expectedItems must be > 0")
+	errInvalidFalsePositiveRate = errors.New("falsePositiveRate must be in (0, 1)")
+	errNilBloomFilter           = errors.New("bloom filter is nil")
+	errIncompatibleBloomFilter  = errors.New("bloom filters are incompatible")
 )
 
-// BloomFilter is a probabilistic set for membership tests.
+// BloomFilter is a probabilistic set for membership tests over values of type T.
 // It can return false positives but never false negatives.
-type BloomFilter struct {
+type BloomFilter[T any] struct {
+	hasher    maphash.Hasher[T]
 	bitSize   int
 	hashFuncs int
 	bits      []uint64
 	added     uint64
 }
 
-type BloomFilterResult struct {
-	Filter *BloomFilter
-	Err    error
-}
-
-func NewBloomFilter(bitSize, hashFuncs int) (*BloomFilter, error) {
+func NewBloomFilter[T any](hasher maphash.Hasher[T], bitSize, hashFuncs int) (*BloomFilter[T], error) {
 	if bitSize <= 0 {
 		return nil, errInvalidBitSize
 	}
@@ -40,15 +34,20 @@ func NewBloomFilter(bitSize, hashFuncs int) (*BloomFilter, error) {
 	}
 
 	wordCount := (bitSize + 63) / 64
-	return &BloomFilter{
+	return &BloomFilter[T]{
+		hasher:    hasher,
 		bitSize:   bitSize,
 		hashFuncs: hashFuncs,
 		bits:      make([]uint64, wordCount),
 	}, nil
 }
 
+func NewComparableBloomFilter[T comparable](bitSize, hashFuncs int) (*BloomFilter[T], error) {
+	return NewBloomFilter(maphash.ComparableHasher[T]{}, bitSize, hashFuncs)
+}
+
 // NewBloomFilterByError calculates parameters from capacity and false positive rate.
-func NewBloomFilterByError(expectedItems int, falsePositiveRate float64) (*BloomFilter, error) {
+func NewBloomFilterByError[T any](hasher maphash.Hasher[T], expectedItems int, falsePositiveRate float64) (*BloomFilter[T], error) {
 	if expectedItems <= 0 {
 		return nil, errInvalidExpectedItems
 	}
@@ -60,53 +59,44 @@ func NewBloomFilterByError(expectedItems int, falsePositiveRate float64) (*Bloom
 	p := falsePositiveRate
 	ln2 := math.Ln2
 	m := int(math.Ceil((-n * math.Log(p)) / (ln2 * ln2)))
-	k := int(math.Ceil((float64(m) / n) * ln2))
-	if k <= 0 {
-		k = 1
-	}
+	k := max(int(math.Ceil((float64(m)/n)*ln2)), 1)
 
-	return NewBloomFilter(m, k)
+	return NewBloomFilter(hasher, m, k)
 }
 
-func (bf *BloomFilter) BitSize() int {
+func NewComparableBloomFilterByError[T comparable](expectedItems int, falsePositiveRate float64) (*BloomFilter[T], error) {
+	return NewBloomFilterByError(maphash.ComparableHasher[T]{}, expectedItems, falsePositiveRate)
+}
+
+func (bf *BloomFilter[T]) BitSize() int {
 	return bf.bitSize
 }
 
-func (bf *BloomFilter) HashFuncs() int {
+func (bf *BloomFilter[T]) HashFuncs() int {
 	return bf.hashFuncs
 }
 
-func (bf *BloomFilter) AddedCount() uint64 {
+func (bf *BloomFilter[T]) AddedCount() uint64 {
 	return bf.added
 }
 
-func (bf *BloomFilter) AddString(key string) {
-	bf.AddBytes([]byte(key))
-}
-
-func (bf *BloomFilter) AddBytes(key []byte) {
-	for i := 0; i < bf.hashFuncs; i++ {
-		idx := bf.hashIndex(key, i)
-		bf.setBit(idx)
+func (bf *BloomFilter[T]) Add(v T) {
+	for round := range bf.hashFuncs {
+		bf.setBit(bf.bitIndex(v, round))
 	}
 	bf.added++
 }
 
-func (bf *BloomFilter) TestString(key string) bool {
-	return bf.TestBytes([]byte(key))
-}
-
-func (bf *BloomFilter) TestBytes(key []byte) bool {
-	for i := 0; i < bf.hashFuncs; i++ {
-		idx := bf.hashIndex(key, i)
-		if !bf.hasBit(idx) {
+func (bf *BloomFilter[T]) Test(v T) bool {
+	for round := range bf.hashFuncs {
+		if !bf.hasBit(bf.bitIndex(v, round)) {
 			return false
 		}
 	}
 	return true
 }
 
-func (bf *BloomFilter) Merge(other *BloomFilter) error {
+func (bf *BloomFilter[T]) Merge(other *BloomFilter[T]) error {
 	if bf == nil || other == nil {
 		return errNilBloomFilter
 	}
@@ -121,57 +111,47 @@ func (bf *BloomFilter) Merge(other *BloomFilter) error {
 	return nil
 }
 
-func (bf *BloomFilter) Reset() {
+func (bf *BloomFilter[T]) Reset() {
 	clear(bf.bits)
 	bf.added = 0
 }
 
-func (bf *BloomFilter) hashIndex(key []byte, hashRound int) int {
-	var prefix [8]byte
-	binary.LittleEndian.PutUint64(prefix[:], uint64(hashRound))
-
-	h := fnv.New64a()
-	_, _ = h.Write(prefix[:])
-	_, _ = h.Write(key)
-	return int(h.Sum64() % uint64(bf.bitSize))
+func (bf *BloomFilter[T]) bitIndex(v T, round int) int {
+	return int(hashRound(bf.hasher, round, v) % uint64(bf.bitSize))
 }
 
-func (bf *BloomFilter) setBit(index int) {
+func (bf *BloomFilter[T]) setBit(index int) {
 	word := index / 64
 	offset := uint(index % 64)
 	bf.bits[word] |= uint64(1) << offset
 }
 
-func (bf *BloomFilter) hasBit(index int) bool {
+func (bf *BloomFilter[T]) hasBit(index int) bool {
 	word := index / 64
 	offset := uint(index % 64)
 	return bf.bits[word]&(uint64(1)<<offset) != 0
 }
 
-func BloomFilterCollect[A any](bitSize, hashFuncs int, keyFn func(A) string) func(iter.Seq[A]) BloomFilterResult {
-	return func(seq iter.Seq[A]) BloomFilterResult {
-		bf, err := NewBloomFilter(bitSize, hashFuncs)
-		if err != nil {
-			return BloomFilterResult{Err: err}
-		}
-
-		for v := range seq {
-			bf.AddString(keyFn(v))
-		}
-		return BloomFilterResult{Filter: bf}
+func (s Stream[A]) CollectBloomFilter(hasher maphash.Hasher[A], bitSize, hashFuncs int) (*BloomFilter[A], error) {
+	bf, err := NewBloomFilter(hasher, bitSize, hashFuncs)
+	if err != nil {
+		return nil, err
 	}
+
+	for v := range s.seq {
+		bf.Add(v)
+	}
+	return bf, nil
 }
 
-func BloomFilterCollectByError[A any](expectedItems int, falsePositiveRate float64, keyFn func(A) string) func(iter.Seq[A]) BloomFilterResult {
-	return func(seq iter.Seq[A]) BloomFilterResult {
-		bf, err := NewBloomFilterByError(expectedItems, falsePositiveRate)
-		if err != nil {
-			return BloomFilterResult{Err: err}
-		}
-
-		for v := range seq {
-			bf.AddString(keyFn(v))
-		}
-		return BloomFilterResult{Filter: bf}
+func (s Stream[A]) CollectBloomFilterByError(hasher maphash.Hasher[A], expectedItems int, falsePositiveRate float64) (*BloomFilter[A], error) {
+	bf, err := NewBloomFilterByError(hasher, expectedItems, falsePositiveRate)
+	if err != nil {
+		return nil, err
 	}
+
+	for v := range s.seq {
+		bf.Add(v)
+	}
+	return bf, nil
 }
